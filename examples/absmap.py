@@ -1,5 +1,5 @@
 import logging
-from collections import MutableMappin
+from collections import MutableMapping
 from azure import storage
 from zarr.util import normalize_storage_path
 
