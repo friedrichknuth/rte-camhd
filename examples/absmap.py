@@ -1,6 +1,6 @@
 import logging
-from collections import MutableMapping
-from google.cloud import storage
+from collections import MutableMappin
+from azure import storage
 from zarr.util import normalize_storage_path
 
 logger = logging.getLogger(__name__)
@@ -12,37 +12,39 @@ def strip_prefix_from_path(path, prefix):
     else:
         return path
 
-class GCSMap(MutableMapping):
+class ABSMap(MutableMapping):
 
-    def __init__(self, bucket_name, prefix, client_kwargs={}):
+	def __init__(self, container_name, prefix, user, token):
 
-        self.bucket_name = bucket_name
+        self.user = user
+        self.token = token
+		self.container_name = container_name
         self.prefix = normalize_storage_path(prefix)
-        self.client_kwargs = {}
-        
-        self.initialize_bucket()
-        
-    def initialize_bucket(self):
-        client = storage.Client(**self.client_kwargs)
-        self.bucket = client.get_bucket(self.bucket_name)
-        
+        self.initialize_container()
+
+    def initialize_container(self):
+        self.client = storage.blob.BlockBlobService(self.user, self.token)
+        # azure doesn't seem to be a way to initialize a container as google goes with get_bucket(). 
+        # client needs to be used in functions and container name needs to be passed on.
+        # could get rid of this function and consolidate. 
+
     # needed for pickling
     def __getstate__(self):
         state = self.__dict__.copy()
-        del state['bucket']
+        del state['container']
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self.initialize_bucket()
-        
+        self.initialize_container()
+
 
     def __getitem__(self, key):
-        logger.debug('__getitem__(%s)' % key)
+        logger.debug('__getitem__(%s)' % key) # not sure what logger returns. need to test live and adapt.
         blob_name = '/'.join([self.prefix, key])
-        blob = self.bucket.get_blob(blob_name)
+        blob = self.client.get_blob_to_text(self.container_name, blob_name)
         if blob:
-            return blob.download_as_string()
+            return blob
         else:
             raise KeyError('Blob %s not found' % blob_name)
 
@@ -54,13 +56,13 @@ class GCSMap(MutableMapping):
 
     def __contains__(self, key):
         logger.debug('__contains__(%s)' % key)
-        blob_name = '/'.join([self.prefix, key])
-        return self.bucket.get_blob(blob_name) is not None
+        blob_name = '/'.join([self.container_name, key])
+        return self.client.get_blob_to_text(blob_name) is not None
 
     def __eq__(self, other):
         return (
-            isinstance(other, GCSMap) and
-            self.bucket_name == other.bucket_name and
+            isinstance(other, ACSMap) and
+            self.container_name == other.container_name and
             self.prefix == other.prefix
         )
 
@@ -72,27 +74,31 @@ class GCSMap(MutableMapping):
 
     def __len__(self):
         raise NotImplementedError
+
+    def __contains__(self, key):
+        logger.debug('__contains__(%s)' % key)
+        blob_name = '/'.join([self.prefix, key])
+        return self.client.get_blob_to_text(blob_name) is not None
+
         
-    def list_gcs_directory_blobs(self, prefix):
-        """Return list of all blobs under a gcs prefix."""
+    def list_abs_directory_blobs(self, prefix):
+        """Return list of all blobs under a abs prefix."""
         return [blob.name for blob in
-                self.bucket.list_blobs(prefix=prefix, delimiter='/')]
+                self.client.list_blobs(prefix=prefix)]
 
-    # from https://github.com/GoogleCloudPlatform/google-cloud-python/issues/920#issuecomment-326125992
-    def list_gcs_subdirectories(self, prefix):
-        """Return set of all "subdirectories" from a gcs prefix."""
-        iterator = self.bucket.list_blobs(prefix=prefix, delimiter='/')
-        prefixes = set()
-        for page in iterator.pages:
-            prefixes.update(page.prefixes)
-        # need to strip trailing slash to be consistent with os.listdir
-        return [path[:-1] for path in prefixes]
+    def list_abs_subdirectories(self, prefix):
+        """Return set of all "subdirectories" from a abs prefix."""
+        iterator = self.client.list_blobs(prefix=prefix, delimiter='/')
 
-    def list_gcs_directory(self, prefix, strip_prefix=True):
+        # here comes a hack. azure list_blobs() doesn't seems to have iterator.pages
+
+        return set([blob.name.rsplit('/',1)[:-1][0] for blob in iterator  if '/' in blob.name])
+
+    def list_abs_directory(self, prefix, strip_prefix=True):
         """Return a list of all blobs and subdirectories from a gcs prefix."""
         items = set()
-        items.update(self.list_gcs_directory_blobs(prefix))
-        items.update(self.list_gcs_subdirectories(prefix))
+        items.update(self.list_abs_directory_blobs(prefix))
+        items.update(self.list_abs_subdirectories(prefix))
         items = list(items)
         if strip_prefix:
             items = [strip_prefix_from_path(path, prefix) for path in items]
@@ -111,7 +117,7 @@ class GCSMap(MutableMapping):
     def listdir(self, path=None):
         logger.debug('listdir(%s)' % path)
         dir_path = self.dir_path(path)
-        return sorted(self.list_gcs_directory(dir_path, strip_prefix=True))
+        return sorted(self.list_abs_directory(dir_path, strip_prefix=True))
 
     def rename(self, src_path, dst_path):
         raise NotImplementedErrror
@@ -123,8 +129,8 @@ class GCSMap(MutableMapping):
         logger.debug('getsize %s' % path)
         dir_path = self.dir_path(path)
         size = 0
-        for blob in self.bucket.list_blobs(prefix=dir_path):
-            size += blob.size
+        for blob in self.client.list_blobs(prefix=dir_path):
+            size += blob.properties.content_length # from https://stackoverflow.com/questions/47694592/get-container-sizes-in-azure-blob-storage-using-python
         return size
 
     def clear(self):
