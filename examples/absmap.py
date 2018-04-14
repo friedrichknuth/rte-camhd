@@ -61,7 +61,7 @@ class ABSMap(MutableMapping):
 
     def __eq__(self, other):
         return (
-            isinstance(other, ACSMap) and
+            isinstance(other, ABSMap) and
             self.container_name == other.container_name and
             self.prefix == other.prefix
         )
